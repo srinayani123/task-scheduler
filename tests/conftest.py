@@ -2,24 +2,32 @@
 Test configuration and fixtures.
 """
 
+import os
+# Set test database BEFORE importing app
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+
 import pytest
 import asyncio
 from typing import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
+# Now import app modules
 from app.main import app
-from app.core.database import get_db
+from app.core.database import get_db, Base
 from app.core.redis_client import redis_client
-from app.models.models import Base
 
 
 # Test database
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
-test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+test_engine = create_async_engine(
+    TEST_DATABASE_URL, 
+    echo=False,
+    connect_args={"check_same_thread": False}
+)
 TestSessionLocal = async_sessionmaker(
     test_engine,
     class_=AsyncSession,
@@ -146,19 +154,14 @@ def mock_redis():
 @pytest.fixture
 def client(mock_redis):
     """Create test client with fresh database for each test."""
-    import asyncio
+    from app.core import database
     
-    # Create tables
-    async def setup_db():
-        async with test_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+    # Override the engine and sessionmaker in the database module
+    original_engine = database.engine
+    original_session = database.AsyncSessionLocal
     
-    async def teardown_db():
-        async with test_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-    
-    # Run setup
-    asyncio.get_event_loop().run_until_complete(setup_db())
+    database.engine = test_engine
+    database.AsyncSessionLocal = TestSessionLocal
     
     # Override dependencies
     async def override_get_db():
@@ -173,17 +176,26 @@ def client(mock_redis):
     redis_client._client = mock_redis
     app.dependency_overrides[get_db] = override_get_db
     
-    with TestClient(app) as test_client:
+    with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
     
     # Cleanup
     app.dependency_overrides.clear()
-    asyncio.get_event_loop().run_until_complete(teardown_db())
+    database.engine = original_engine
+    database.AsyncSessionLocal = original_session
 
 
 @pytest.fixture
 async def async_client(mock_redis):
     """Create async test client."""
+    from app.core import database
+    
+    original_engine = database.engine
+    original_session = database.AsyncSessionLocal
+    
+    database.engine = test_engine
+    database.AsyncSessionLocal = TestSessionLocal
+    
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
@@ -203,6 +215,8 @@ async def async_client(mock_redis):
         yield ac
     
     app.dependency_overrides.clear()
+    database.engine = original_engine
+    database.AsyncSessionLocal = original_session
     
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
