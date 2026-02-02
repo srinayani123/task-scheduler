@@ -34,13 +34,20 @@ class TestRetryHandler:
     
     def test_max_delay_cap(self):
         """Retry delay should be capped at max_delay."""
+        # Capture time BEFORE the calculation
+        now = datetime.utcnow()
+        
         # With high attempt number, delay should still be capped
         next_retry = RetryHandler.calculate_next_retry(100)
         
-        now = datetime.utcnow()
-        max_expected = now + timedelta(seconds=3700)  # Max delay + jitter
+        # Max delay is 3600 seconds + 10% jitter = 3960 seconds max
+        # Add extra buffer for test execution time
+        max_expected = now + timedelta(seconds=4000)
         
-        assert next_retry <= max_expected
+        # Also verify it's at least near the max delay (3600 - 10% jitter = 3240)
+        min_expected = now + timedelta(seconds=3200)
+        
+        assert min_expected <= next_retry <= max_expected
 
 
 class TestDeadLetterQueue:

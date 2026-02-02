@@ -138,44 +138,71 @@ def event_loop():
 
 
 @pytest.fixture
-async def db_session():
-    """Create test database session."""
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    
-    async with TestSessionLocal() as session:
-        yield session
-    
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
-
-@pytest.fixture
 def mock_redis():
     """Create mock Redis client."""
     return MockRedis()
 
 
 @pytest.fixture
-def client(db_session, mock_redis):
-    """Create test client."""
+def client(mock_redis):
+    """Create test client with fresh database for each test."""
+    import asyncio
+    
+    # Create tables
+    async def setup_db():
+        async with test_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    
+    async def teardown_db():
+        async with test_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+    
+    # Run setup
+    asyncio.get_event_loop().run_until_complete(setup_db())
+    
+    # Override dependencies
     async def override_get_db():
-        yield db_session
+        async with TestSessionLocal() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
     
     redis_client._client = mock_redis
     app.dependency_overrides[get_db] = override_get_db
     
-    return TestClient(app)
+    with TestClient(app) as test_client:
+        yield test_client
+    
+    # Cleanup
+    app.dependency_overrides.clear()
+    asyncio.get_event_loop().run_until_complete(teardown_db())
 
 
 @pytest.fixture
-async def async_client(db_session, mock_redis):
+async def async_client(mock_redis):
     """Create async test client."""
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    
     async def override_get_db():
-        yield db_session
+        async with TestSessionLocal() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
     
     redis_client._client = mock_redis
     app.dependency_overrides[get_db] = override_get_db
     
     async with AsyncClient(app=app, base_url="http://test") as ac:
         yield ac
+    
+    app.dependency_overrides.clear()
+    
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
