@@ -1,0 +1,104 @@
+services:
+  # API Server
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/taskscheduler
+      - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=development
+      - MAX_CONCURRENT_JOBS=10
+      - MAX_RETRIES=3
+      - RETRY_BASE_DELAY=60
+      - DLQ_ENABLED=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Worker 1
+  worker1:
+    build: .
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/taskscheduler
+      - REDIS_URL=redis://redis:6379
+      - WORKER_ID=worker-1
+      - MAX_CONCURRENT_JOBS=4
+    depends_on:
+      - api
+    volumes:
+      - ./app:/app/app
+    command: python -m app.workers.run_worker
+
+  # Worker 2
+  worker2:
+    build: .
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/taskscheduler
+      - REDIS_URL=redis://redis:6379
+      - WORKER_ID=worker-2
+      - MAX_CONCURRENT_JOBS=4
+    depends_on:
+      - api
+    volumes:
+      - ./app:/app/app
+    command: python -m app.workers.run_worker
+
+  # PostgreSQL
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=taskscheduler
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Prometheus (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    profiles:
+      - monitoring
+
+  # Grafana (optional)
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    profiles:
+      - monitoring
+
+volumes:
+  postgres_data:
+  redis_data:
