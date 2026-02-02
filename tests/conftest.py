@@ -154,7 +154,9 @@ def mock_redis():
 @pytest.fixture
 def client(mock_redis):
     """Create test client with fresh database for each test."""
+    import asyncio
     from app.core import database
+    from app.models.models import Base
     
     # Override the engine and sessionmaker in the database module
     original_engine = database.engine
@@ -162,6 +164,14 @@ def client(mock_redis):
     
     database.engine = test_engine
     database.AsyncSessionLocal = TestSessionLocal
+    
+    # Clean database before each test
+    async def reset_db():
+        async with test_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+    
+    asyncio.get_event_loop().run_until_complete(reset_db())
     
     # Override dependencies
     async def override_get_db():
@@ -183,8 +193,7 @@ def client(mock_redis):
     app.dependency_overrides.clear()
     database.engine = original_engine
     database.AsyncSessionLocal = original_session
-
-
+    
 @pytest.fixture
 async def async_client(mock_redis):
     """Create async test client."""
